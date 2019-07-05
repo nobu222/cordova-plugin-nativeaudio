@@ -1,3 +1,7 @@
+# Cordova Native Audio Plugin for Capacitor
+
+This fork is working on capacitor platform.
+
 # Cordova Native Audio Plugin
 
 Cordova / PhoneGap 3.5+ extension for Native Audio playback, aimed at HTML5 gaming and audio applications which require minimum latency, polyphony and concurrency.
