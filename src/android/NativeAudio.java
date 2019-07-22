@@ -52,7 +52,8 @@ public class NativeAudio extends CordovaPlugin implements AudioManager.OnAudioFo
 	private static HashMap<String, NativeAudioAsset> assetMap;
     private static ArrayList<NativeAudioAsset> resumeList;
     private static HashMap<String, CallbackContext> completeCallbacks;
-    private boolean fadeMusic = false;
+	private boolean fadeMusic = false;
+	private boolean isBackground = false;
 
     public void setOptions(JSONObject options) {
 		if(options != null) {
@@ -75,21 +76,16 @@ public class NativeAudio extends CordovaPlugin implements AudioManager.OnAudioFo
 					volume = data.getDouble(2);
 				}
 
-				int voices;
+				int preview;
 				if (data.length() <= 3) {
-					voices = 1;
+					preview = 100;
 				} else {
-					voices = data.getInt(3);
+					preview = data.getInt(3);
 				}
 
 				String fullPath = "public/".concat(assetPath);
 
-				Context ctx = cordova.getActivity().getApplicationContext();
-				AssetManager am = ctx.getResources().getAssets();
-				AssetFileDescriptor afd = am.openFd(fullPath);
-
-				NativeAudioAsset asset = new NativeAudioAsset(
-						afd, voices, (float)volume);
+				NativeAudioAsset asset = new NativeAudioAsset(cordova.getActivity().getApplicationContext(), fullPath, preview, (float) volume);
 				assetMap.put(audioID, asset);
 
 				return new PluginResult(Status.OK);
@@ -104,6 +100,10 @@ public class NativeAudio extends CordovaPlugin implements AudioManager.OnAudioFo
 	}
 	
 	private PluginResult executePlayOrLoop(String action, JSONArray data) {
+		if (isBackground) {
+			return new PluginResult(Status.OK);
+		}
+
 		final String audioID;
 		try {
 			audioID = data.getString(0);
@@ -309,27 +309,41 @@ public class NativeAudio extends CordovaPlugin implements AudioManager.OnAudioFo
         } else if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
             // Stop playback
         }
-    }
+	}
+	
+	private void pausePlayback() {
+		for (NativeAudioAsset asset : assetMap.values()) {
+		     boolean wasPlaying = asset.pause();
+		     if (wasPlaying) {
+		         resumeList.add(asset);
+		     }
+		}
+	}
+
+	private void resumePlayback() {
+		for (NativeAudioAsset asset: resumeList) {
+			asset.resume();
+		}
+		resumeList.clear();
+	}
+
+	private void stopPlayback() {
+		for (NativeAudioAsset asset: assetMap.values()) {
+			asset.stop();
+		}
+	}
 
     @Override
     public void onPause(boolean multitasking) {
-        super.onPause(multitasking);
-
-        for (HashMap.Entry<String, NativeAudioAsset> entry : assetMap.entrySet()) {
-            NativeAudioAsset asset = entry.getValue();
-            boolean wasPlaying = asset.pause();
-            if (wasPlaying) {
-                resumeList.add(asset);
-            }
-        }
+		super.onPause(multitasking);
+		pausePlayback();
+		isBackground = true;
     }
 
     @Override
     public void onResume(boolean multitasking) {
-        super.onResume(multitasking);
-        while (!resumeList.isEmpty()) {
-            NativeAudioAsset asset = resumeList.remove(0);
-            asset.resume();
-        }
+		super.onResume(multitasking);
+		resumePlayback();
+		isBackground = false;
     }
 }

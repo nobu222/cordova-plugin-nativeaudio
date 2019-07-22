@@ -8,15 +8,18 @@
 package com.rjfun.cordova.plugin.nativeaudio;
 
 import java.io.IOException;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.Callable;
 
+import android.content.Context;
 import android.content.res.AssetFileDescriptor;
 import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.MediaPlayer.OnCompletionListener;
-import android.media.MediaPlayer.OnPreparedListener;
+import android.util.Log;
 
-public class NativeAudioAssetComplex implements OnPreparedListener, OnCompletionListener {
+public class NativeAudioAssetComplex implements OnCompletionListener {
 
 	private static final int INVALID = 0;
 	private static final int PREPARED = 1;
@@ -26,21 +29,45 @@ public class NativeAudioAssetComplex implements OnPreparedListener, OnCompletion
 	private static final int LOOPING = 5;
 	
 	private MediaPlayer mp;
+	private MediaPlayer nmp;
 	private int state;
+	private Timer GapTimer;
+	private TimerTask GapTimerTask;
+	private int gapLoopTime;
+	private float volume;
+	private Context ctx;
+	// private AssetFileDescriptor afd;
+	private String fullPath;
     Callable<Void> completeCallback;
 
-	public NativeAudioAssetComplex( AssetFileDescriptor afd, float volume)  throws IOException
+	public NativeAudioAssetComplex(Context ctx, String fullPath, float volume, int preview) throws IOException
 	{
+		this.gapLoopTime = preview;
 		state = INVALID;
-		mp = new MediaPlayer();
-        mp.setOnCompletionListener(this);
-        mp.setOnPreparedListener(this);
-		mp.setDataSource( afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
-		mp.setAudioStreamType(AudioManager.STREAM_MUSIC); 
-		mp.setVolume(volume, volume);
-		mp.prepare();
+		this.volume = volume;
+		this.ctx = ctx;
+		this.fullPath = fullPath;
+		this.mp = prepareNextMediaplayer();
 	}
 	
+	private MediaPlayer prepareNextMediaplayer() throws IOException
+	{
+		MediaPlayer m = new MediaPlayer();
+		m.setOnCompletionListener(this);
+		// m.setOnPreparedListener(this);
+		AssetFileDescriptor afd = this.ctx.getResources().getAssets().openFd(this.fullPath);
+		m.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+		afd.close();
+		//
+		if (gapLoopTime == -4)
+			m.setAudioStreamType(AudioManager.STREAM_ALARM);
+		else
+			m.setAudioStreamType(AudioManager.STREAM_MUSIC);
+		m.setVolume(volume, volume);
+		m.prepare();
+		return m;
+	}
+
 	public void play(Callable<Void> completeCb) throws IOException
 	{
         completeCallback = completeCb;
@@ -57,29 +84,26 @@ public class NativeAudioAssetComplex implements OnPreparedListener, OnCompletion
 			mp.seekTo(0);
 			mp.start();
 		}
-		if ( !playing && state == PREPARED )
-		{
-			state = (loop ? PENDING_LOOP : PENDING_PLAY);
-			onPrepared( mp );
-		}
 		else if ( !playing )
 		{
 			state = (loop ? PENDING_LOOP : PENDING_PLAY);
 			mp.setLooping(loop);
 			mp.start();
 		}
+
+		checkStatus();
 	}
 
 	public boolean pause()
 	{
 		try
 		{
-    				if ( mp.isPlaying() )
-				{
-					mp.pause();
-					return true;
-				}
-        	}
+			if ( mp.isPlaying() )
+			{
+				mp.pause();
+				return true;
+			}
+		}
 		catch (IllegalStateException e)
 		{
 		// I don't know why this gets thrown; catch here to save app
@@ -96,28 +120,32 @@ public class NativeAudioAssetComplex implements OnPreparedListener, OnCompletion
 	{
 		try
 		{
+			if (GapTimer != null)
+			{
+				GapTimer.cancel();
+			}
 			if ( mp.isPlaying() )
 			{
 				state = INVALID;
 				mp.pause();
 				mp.seekTo(0);
-	           	}
+			}
 		}
-	        catch (IllegalStateException e)
-	        {
-            // I don't know why this gets thrown; catch here to save app
-	        }
+		catch (IllegalStateException e)
+		{
+		// I don't know why this gets thrown; catch here to save app
+		}
 	}
 
 	public void setVolume(float volume) 
 	{
-	        try
-	        {
-			mp.setVolume(volume,volume);
-            	}
-            	catch (IllegalStateException e) 
+		try
 		{
-                // I don't know why this gets thrown; catch here to save app
+			mp.setVolume(volume,volume);
+		}
+		catch (IllegalStateException e) 
+		{
+			// I don't know why this gets thrown; catch here to save app
 		}
 	}
 	
@@ -132,41 +160,74 @@ public class NativeAudioAssetComplex implements OnPreparedListener, OnCompletion
 		mp.release();
 	}
 	
-	public void onPrepared(MediaPlayer mPlayer) 
+	public void checkStatus()
 	{
-		if (state == PENDING_PLAY) 
-		{
+		if (state == PENDING_PLAY) {
 			mp.setLooping(false);
 			mp.seekTo(0);
 			mp.start();
 			state = PLAYING;
-		}
-		else if ( state == PENDING_LOOP )
-		{
-			mp.setLooping(true);
+		} else if (state == PENDING_LOOP) {
+			// Self Manage the Loop
+			if (gapLoopTime > 0) {
+				mp.setLooping(false);
+				GapTimer = new Timer();
+				GapTimerTask = new TimerTask() {
+					@Override
+					public void run() {
+						try {
+							if (mp.isPlaying() && gapLoopTime > 0) {
+								mp.seekTo(0);
+							}
+						} catch (Exception e) {
+							e.printStackTrace();
+						}
+					}
+				};
+				long waitingTime = (long) mp.getDuration() - (long) gapLoopTime;
+				GapTimer.schedule(GapTimerTask, waitingTime, waitingTime);
+				Log.i(NativeAudioAssetComplex.class.getName(), "Started MediaPlayer with GapTimer enabled.");
+			} else if (gapLoopTime == -1) {
+				try {
+					mp.setLooping(false);
+					nmp = prepareNextMediaplayer();
+					mp.setNextMediaPlayer(nmp);
+					Log.i(NativeAudioAssetComplex.class.getName(), "Started MediaPlayer with GapLess enabled.");
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			} else {
+				mp.setLooping(true);
+				Log.i(NativeAudioAssetComplex.class.getName(), "Started MediaPlayer with standard loop enabled.");
+			}
 			mp.seekTo(0);
 			mp.start();
 			state = LOOPING;
 		}
-		else
-		{
-			state = PREPARED;
-			mp.seekTo(0);
-		}
 	}
-	
+
 	public void onCompletion(MediaPlayer mPlayer)
 	{
-		if (state != LOOPING)
-		{
+		if (state != LOOPING) {
 			this.state = INVALID;
 			try {
 				this.stop();
 				if (completeCallback != null)
-                completeCallback.call();
+					completeCallback.call();
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
-			catch (Exception e)
-			{
+		} else if (gapLoopTime == -1) {
+			try {
+				this.nmp.setVolume(volume, volume);
+				MediaPlayer tmp = prepareNextMediaplayer();
+				this.nmp.setNextMediaPlayer(tmp);
+				this.mp = this.nmp;
+				this.nmp = tmp;
+				mPlayer.stop();
+				mPlayer.release();
+				// Log.i(NativeAudioAssetComplex.class.getName(), "Continue with GapLess Next Mediaplayer.");
+			} catch (IOException e) {
 				e.printStackTrace();
 			}
 		}
